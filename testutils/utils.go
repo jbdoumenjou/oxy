@@ -1,7 +1,6 @@
 package testutils
 
 import (
-	"crypto/tls"
 	"errors"
 	"io/ioutil"
 	"net/http"
@@ -10,8 +9,15 @@ import (
 	"strings"
 	"time"
 
+	"crypto/tls"
+	"crypto/x509"
+
 	"github.com/mailgun/timetools"
 	"github.com/vulcand/oxy/utils"
+)
+
+const (
+	certDirectory = "../testutils/certs/"
 )
 
 // NewHandler creates a new Server
@@ -37,11 +43,12 @@ func ParseURI(uri string) *url.URL {
 
 // ReqOpts request options
 type ReqOpts struct {
-	Host    string
-	Method  string
-	Body    string
-	Headers http.Header
-	Auth    *utils.BasicAuth
+	Host       string
+	Method     string
+	Body       string
+	Headers    http.Header
+	Auth       *utils.BasicAuth
+	ClientCertNames []string
 }
 
 // ReqOption request option type
@@ -104,6 +111,14 @@ func BasicAuth(username, password string) ReqOption {
 	}
 }
 
+// Method sets client certificate flag
+func PassClientCert(certNames []string) ReqOption {
+	return func(o *ReqOpts) error {
+		o.ClientCertNames = certNames
+		return nil
+	}
+}
+
 // MakeRequest create and do a request
 func MakeRequest(url string, opts ...ReqOption) (*http.Response, []byte, error) {
 	o := &ReqOpts{}
@@ -136,12 +151,36 @@ func MakeRequest(url string, opts ...ReqOption) (*http.Response, []byte, error) 
 
 	var tr *http.Transport
 	if strings.HasPrefix(url, "https") {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         request.Host,
+		}
+
+		if len(o.ClientCertNames) > 0 {
+			clientCACert, err := ioutil.ReadFile(certDirectory + "ca.crt")
+			if err != nil {
+				return nil, nil, err
+			}
+			clientCertPool := x509.NewCertPool()
+			clientCertPool.AppendCertsFromPEM(clientCACert)
+			tlsConfig.RootCAs = clientCertPool
+
+			var certs []tls.Certificate
+
+			for _, name := range o.ClientCertNames {
+				cert, err := tls.LoadX509KeyPair(certDirectory+name+".crt", certDirectory+name+".key")
+				if err != nil {
+					return nil, nil, err
+				}
+				certs = append(certs, cert)
+			}
+
+			tlsConfig.Certificates = certs
+			tlsConfig.BuildNameToCertificate()
+		}
 		tr = &http.Transport{
 			DisableKeepAlives: true,
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-				ServerName:         request.Host,
-			},
+			TLSClientConfig:   tlsConfig,
 		}
 	} else {
 		tr = &http.Transport{

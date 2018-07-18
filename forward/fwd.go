@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
 	"github.com/vulcand/oxy/utils"
+	"crypto/x509"
 )
 
 // OxyLogger interface of the internal
@@ -46,6 +47,14 @@ type optSetter func(f *Forwarder) error
 func PassHostHeader(b bool) optSetter {
 	return func(f *Forwarder) error {
 		f.httpForwarder.passHost = b
+		return nil
+	}
+}
+
+// PassClientCert specifies if a client's Certificate info header field should be added
+func PassClientCert(b bool) optSetter {
+	return func(f *Forwarder) error {
+		f.httpForwarder.passClientCert = b
 		return nil
 	}
 }
@@ -181,6 +190,7 @@ type httpForwarder struct {
 	roundTripper   http.RoundTripper
 	rewriter       ReqRewriter
 	passHost       bool
+	passClientCert bool
 	flushInterval  time.Duration
 	modifyResponse func(*http.Response) error
 
@@ -286,6 +296,58 @@ func (f *httpForwarder) getUrlFromRequest(req *http.Request) *url.URL {
 	return u
 }
 
+// get the Subject Alternate Name values
+func getSANs(cert *x509.Certificate) []string {
+	sans := append(cert.DNSNames, cert.EmailAddresses...)
+
+	var ips []string
+	for _, ip := range cert.IPAddresses {
+		ips = append(ips, ip.String())
+	}
+	sans = append(sans, ips...)
+
+	var uris []string
+	for _, uri := range cert.URIs {
+		uris = append(uris, uri.String())
+	}
+
+	return append(sans, uris...)
+}
+
+// Build a string with the wanted client certificates information
+func getXForwardedSSLClientCert(certs []*x509.Certificate) string {
+	var headerValues []string
+
+	for _, peerCert := range certs {
+		cs := peerCert.Subject
+		c := ""
+		if len(cs.Country) > 0 {
+			c = cs.Country[0]
+		}
+
+		st := ""
+		if len(cs.Province) > 0 {
+			st = cs.Province[0]
+		}
+
+		l := ""
+		if len(cs.Locality) > 0 {
+			l = cs.Locality[0]
+		}
+
+		o := ""
+		if len(cs.Organization) > 0 {
+			o = cs.Organization[0]
+		}
+
+		value := fmt.Sprintf(`Subject="C=%s, ST=%s, L=%s, O=%s, CN=%s"; SAN=%s`, c, st,
+			l, o, cs.CommonName, strings.Join(getSANs(peerCert), ","))
+		headerValues = append(headerValues, value)
+	}
+
+	return strings.Join(headerValues, ",")
+}
+
 // Modify the request to handle the target URL
 func (f *httpForwarder) modifyRequest(outReq *http.Request, target *url.URL) {
 	outReq.URL = utils.CopyURL(outReq.URL)
@@ -307,6 +369,10 @@ func (f *httpForwarder) modifyRequest(outReq *http.Request, target *url.URL) {
 	outReq.Proto = "HTTP/1.1"
 	outReq.ProtoMajor = 1
 	outReq.ProtoMinor = 1
+
+	if f.passClientCert && outReq.TLS != nil && len(outReq.TLS.PeerCertificates) > 0 {
+		outReq.Header.Set(XForwardedSSLClientCert, getXForwardedSSLClientCert(outReq.TLS.PeerCertificates))
+	}
 
 	if f.rewriter != nil {
 		f.rewriter.Rewrite(outReq)

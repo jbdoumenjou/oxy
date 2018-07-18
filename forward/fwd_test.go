@@ -8,10 +8,20 @@ import (
 	"testing"
 	"time"
 
+	"crypto/tls"
+	"crypto/x509"
+	"io/ioutil"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vulcand/oxy/testutils"
 	"github.com/vulcand/oxy/utils"
+	"net"
+	"net/url"
+)
+
+const (
+	certDirectory = "../testutils/certs/"
 )
 
 // Makes sure hop-by-hop headers are removed
@@ -340,4 +350,87 @@ func TestContextWithValueInErrHandler(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusBadGateway, re.StatusCode)
 	assert.True(t, *originalPBool)
+}
+
+func getUrl(t *testing.T,s string) *url.URL {
+	url, err := url.Parse(s)
+	if err != nil {
+		t.Error(err)
+	}
+	return url
+}
+
+func TestGetSans(t *testing.T) {
+	tests := []struct {
+		cert  *x509.Certificate
+
+		Expected []string
+	} {
+		{&x509.Certificate{DNSNames: []string{"mydns1.org", "mydns2.org"}} , []string{"mydns1.org", "mydns2.org"}},
+		{&x509.Certificate{EmailAddresses: []string{"test@test.org", "test2@test.org"}} , []string{"test@test.org", "test2@test.org"}},
+		{&x509.Certificate{IPAddresses: []net.IP{net.IPv4(10,0,0,1), net.IPv4(10,0,0,2)}} , []string{"10.0.0.1", "10.0.0.2"}},
+		{&x509.Certificate{URIs: []*url.URL{getUrl(t, "www.test.org"), getUrl(t, "test.org")}} , []string{"www.test.org", "test.org"}},
+		{&x509.Certificate{
+			DNSNames: []string{"mydns1.org", "mydns2.org"} ,
+			EmailAddresses: []string{"test@test.org", "test2@test.org"},
+			IPAddresses: []net.IP{net.IPv4(10,0,0,1), net.IPv4(10,0,0,2)},
+			URIs: []*url.URL{getUrl(t, "www.test.org"), getUrl(t, "test.org")},
+		} ,
+		[]string{"mydns1.org", "mydns2.org", "test@test.org", "test2@test.org", "10.0.0.1", "10.0.0.2", "www.test.org", "test.org"}},
+	}
+
+	for _, test := range tests {
+		require.Equal(t, test.Expected, getSANs(test.cert))
+	}
+}
+
+func TestForwardClientTLSCert(t *testing.T) {
+	tests := []struct {
+		certNames  []string
+
+		ExpectedHeaderValue string
+	}{
+		{[]string{"minimal"}, `Subject="C=FR, ST=Some-State, L=, O=Internet Widgits Pty Ltd, CN="; SAN=`},
+		{[]string{"simple"}, `Subject="C=FR, ST=Some-State, L=Lyon, O=Simple Co, CN=www.simple.org"; SAN=`},
+		{[]string{"cheese"}, `Subject="C=FR, ST=SomeState, L=Toulouse, O=Cheese, CN=*.cheese.org"; SAN=*.cheese.org,*.cheese.net,cheese.in,test@cheese.org,test@cheese.net,10.0.1.0,10.0.1.2`},
+	}
+
+	var outHeaders http.Header
+	srv := testutils.NewHandler(func(w http.ResponseWriter, req *http.Request) {
+		outHeaders = req.Header
+		w.Write([]byte("hello"))
+	})
+	defer srv.Close()
+
+	f, err := New(PassClientCert(true))
+
+	require.Nil(t, err)
+
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		req.URL = testutils.ParseURI(srv.URL)
+		f.ServeHTTP(w, req)
+	})
+	tproxy := httptest.NewUnstartedServer(proxy)
+	clientCACert, err := ioutil.ReadFile(certDirectory+"ca.crt")
+	if err != nil {
+		require.Nil(t, err)
+	}
+	clientCertPool := x509.NewCertPool()
+	clientCertPool.AppendCertsFromPEM(clientCACert)
+	tproxy.TLS = &tls.Config{
+		InsecureSkipVerify: true,
+		ClientAuth:         tls.RequireAndVerifyClientCert,
+		ClientCAs:          clientCertPool,
+	}
+	tproxy.StartTLS()
+	defer tproxy.Close()
+
+	for _, test := range tests {
+		re, _, err := testutils.Get(tproxy.URL, testutils.PassClientCert(test.certNames))
+		require.Nil(t, err)
+		require.Equal(t, http.StatusOK, re.StatusCode)
+		require.Equal(t, "https", outHeaders.Get(XForwardedProto))
+		require.Equal(t, test.ExpectedHeaderValue, outHeaders.Get(XForwardedSSLClientCert))
+	}
+
 }
