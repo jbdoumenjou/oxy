@@ -17,6 +17,7 @@ import (
 	"github.com/vulcand/oxy/testutils"
 	"github.com/vulcand/oxy/utils"
 	"github.com/containous/traefik/log"
+	"regexp"
 )
 
 const (
@@ -357,16 +358,19 @@ func getExpectedCert(t *testing.T, certName string) string{
 		t.Error(err)
 	}
 
-	return sanitize(pem)
+	var re = regexp.MustCompile("-----BEGIN CERTIFICATE-----(?s)(.*)")
+	cert := re.FindString(string(pem))
+	return sanitize([]byte(cert))
 }
+
 func TestForwardClientTLSCert(t *testing.T) {
 	tests := []struct {
 		certNames  []string
 
 		ExpectedHeaderValue string
 	}{
-		//{[]string{"minimal"}, getExpectedCert(t, "minimal")},
-		//{[]string{"simple"}, getExpectedCert(t, "simple")},
+		{[]string{"minimal"}, getExpectedCert(t, "minimal")},
+		{[]string{"simple"}, getExpectedCert(t, "simple")},
 		{[]string{"cheese"}, getExpectedCert(t,"cheese")},
 	}
 
