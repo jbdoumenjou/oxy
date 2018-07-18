@@ -20,6 +20,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/vulcand/oxy/utils"
 	"crypto/x509"
+	"encoding/pem"
 )
 
 // OxyLogger interface of the internal
@@ -296,53 +297,28 @@ func (f *httpForwarder) getUrlFromRequest(req *http.Request) *url.URL {
 	return u
 }
 
-// get the Subject Alternate Name values
-func getSANs(cert *x509.Certificate) []string {
-	sans := append(cert.DNSNames, cert.EmailAddresses...)
-
-	var ips []string
-	for _, ip := range cert.IPAddresses {
-		ips = append(ips, ip.String())
-	}
-	sans = append(sans, ips...)
-
-	var uris []string
-	for _, uri := range cert.URIs {
-		uris = append(uris, uri.String())
-	}
-
-	return append(sans, uris...)
+func sanitize(cert []byte) string {
+	s := string(cert)
+	r := strings.NewReplacer("-----BEGIN CERTIFICATE-----", "",
+		"-----END CERTIFICATE-----", "",
+		"\n", "")
+	return r.Replace(s)
 }
 
-// Build a string with the wanted client certificates information
+func extractCertificate(cert *x509.Certificate) string {
+	b := pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}
+	certPEM := pem.EncodeToMemory(&b)
+
+	return sanitize(certPEM)
+}
+
+
+// Build a string with the client certificates
 func getXForwardedSSLClientCert(certs []*x509.Certificate) string {
 	var headerValues []string
 
 	for _, peerCert := range certs {
-		cs := peerCert.Subject
-		c := ""
-		if len(cs.Country) > 0 {
-			c = cs.Country[0]
-		}
-
-		st := ""
-		if len(cs.Province) > 0 {
-			st = cs.Province[0]
-		}
-
-		l := ""
-		if len(cs.Locality) > 0 {
-			l = cs.Locality[0]
-		}
-
-		o := ""
-		if len(cs.Organization) > 0 {
-			o = cs.Organization[0]
-		}
-
-		value := fmt.Sprintf(`Subject="C=%s, ST=%s, L=%s, O=%s, CN=%s"; SAN=%s`, c, st,
-			l, o, cs.CommonName, strings.Join(getSANs(peerCert), ","))
-		headerValues = append(headerValues, value)
+		headerValues = append(headerValues, extractCertificate(peerCert))
 	}
 
 	return strings.Join(headerValues, ",")

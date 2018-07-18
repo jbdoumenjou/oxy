@@ -16,8 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vulcand/oxy/testutils"
 	"github.com/vulcand/oxy/utils"
-	"net"
-	"net/url"
+	"github.com/containous/traefik/log"
 )
 
 const (
@@ -352,47 +351,23 @@ func TestContextWithValueInErrHandler(t *testing.T) {
 	assert.True(t, *originalPBool)
 }
 
-func getUrl(t *testing.T,s string) *url.URL {
-	url, err := url.Parse(s)
+func getExpectedCert(t *testing.T, certName string) string{
+	pem, err := ioutil.ReadFile(certDirectory + certName + ".crt")
 	if err != nil {
 		t.Error(err)
 	}
-	return url
+
+	return sanitize(pem)
 }
-
-func TestGetSans(t *testing.T) {
-	tests := []struct {
-		cert  *x509.Certificate
-
-		Expected []string
-	} {
-		{&x509.Certificate{DNSNames: []string{"mydns1.org", "mydns2.org"}} , []string{"mydns1.org", "mydns2.org"}},
-		{&x509.Certificate{EmailAddresses: []string{"test@test.org", "test2@test.org"}} , []string{"test@test.org", "test2@test.org"}},
-		{&x509.Certificate{IPAddresses: []net.IP{net.IPv4(10,0,0,1), net.IPv4(10,0,0,2)}} , []string{"10.0.0.1", "10.0.0.2"}},
-		{&x509.Certificate{URIs: []*url.URL{getUrl(t, "www.test.org"), getUrl(t, "test.org")}} , []string{"www.test.org", "test.org"}},
-		{&x509.Certificate{
-			DNSNames: []string{"mydns1.org", "mydns2.org"} ,
-			EmailAddresses: []string{"test@test.org", "test2@test.org"},
-			IPAddresses: []net.IP{net.IPv4(10,0,0,1), net.IPv4(10,0,0,2)},
-			URIs: []*url.URL{getUrl(t, "www.test.org"), getUrl(t, "test.org")},
-		} ,
-		[]string{"mydns1.org", "mydns2.org", "test@test.org", "test2@test.org", "10.0.0.1", "10.0.0.2", "www.test.org", "test.org"}},
-	}
-
-	for _, test := range tests {
-		require.Equal(t, test.Expected, getSANs(test.cert))
-	}
-}
-
 func TestForwardClientTLSCert(t *testing.T) {
 	tests := []struct {
 		certNames  []string
 
 		ExpectedHeaderValue string
 	}{
-		{[]string{"minimal"}, `Subject="C=FR, ST=Some-State, L=, O=Internet Widgits Pty Ltd, CN="; SAN=`},
-		{[]string{"simple"}, `Subject="C=FR, ST=Some-State, L=Lyon, O=Simple Co, CN=www.simple.org"; SAN=`},
-		{[]string{"cheese"}, `Subject="C=FR, ST=SomeState, L=Toulouse, O=Cheese, CN=*.cheese.org"; SAN=*.cheese.org,*.cheese.net,cheese.in,test@cheese.org,test@cheese.net,10.0.1.0,10.0.1.2`},
+		//{[]string{"minimal"}, getExpectedCert(t, "minimal")},
+		//{[]string{"simple"}, getExpectedCert(t, "simple")},
+		{[]string{"cheese"}, getExpectedCert(t,"cheese")},
 	}
 
 	var outHeaders http.Header
@@ -426,6 +401,11 @@ func TestForwardClientTLSCert(t *testing.T) {
 	defer tproxy.Close()
 
 	for _, test := range tests {
+		pem, err := ioutil.ReadFile(certDirectory + test.certNames[0] + ".crt")
+		if err != nil {
+			t.Error(err)
+		}
+		log.Printf("pem: %s", pem)
 		re, _, err := testutils.Get(tproxy.URL, testutils.PassClientCert(test.certNames))
 		require.Nil(t, err)
 		require.Equal(t, http.StatusOK, re.StatusCode)
