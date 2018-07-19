@@ -18,6 +18,7 @@ import (
 	"github.com/vulcand/oxy/utils"
 	"github.com/containous/traefik/log"
 	"regexp"
+	"encoding/pem"
 )
 
 const (
@@ -353,13 +354,21 @@ func TestContextWithValueInErrHandler(t *testing.T) {
 }
 
 func getExpectedCert(t *testing.T, certName string) string{
-	pem, err := ioutil.ReadFile(certDirectory + certName + ".crt")
+	rawCert, err := ioutil.ReadFile(certDirectory + certName + ".crt")
 	if err != nil {
 		t.Error(err)
 	}
 
 	var re = regexp.MustCompile("-----BEGIN CERTIFICATE-----(?s)(.*)")
-	cert := re.FindString(string(pem))
+	cert := re.FindString(string(rawCert))
+	var certDERBlock *pem.Block
+	certDERBlock, _ = pem.Decode(rawCert)
+	log.Printf("RAW: certDERBlock Type: %v\n", certDERBlock.Type)
+	log.Printf("RAW: certDERBlock Bytes: %v\n", certDERBlock.Bytes)
+
+	certDERBlock, _ = pem.Decode([]byte(cert))
+	log.Printf("CLEANED: certDERBlock Type: %v\n", certDERBlock.Type)
+	log.Printf("CLEANED: certDERBlock Bytes: %v\n", certDERBlock.Bytes)
 	return sanitize([]byte(cert))
 }
 
@@ -405,11 +414,6 @@ func TestForwardClientTLSCert(t *testing.T) {
 	defer tproxy.Close()
 
 	for _, test := range tests {
-		pem, err := ioutil.ReadFile(certDirectory + test.certNames[0] + ".crt")
-		if err != nil {
-			t.Error(err)
-		}
-		log.Printf("pem: %s", pem)
 		re, _, err := testutils.Get(tproxy.URL, testutils.PassClientCert(test.certNames))
 		require.Nil(t, err)
 		require.Equal(t, http.StatusOK, re.StatusCode)
