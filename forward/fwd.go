@@ -302,7 +302,9 @@ func sanitize(cert []byte) string {
 	r := strings.NewReplacer("-----BEGIN CERTIFICATE-----", "",
 		"-----END CERTIFICATE-----", "",
 		"\n", "")
-	return r.Replace(s)
+	cleaned := r.Replace(s)
+
+	return url.QueryEscape(cleaned)
 }
 
 func extractCertificate(cert *x509.Certificate) string {
